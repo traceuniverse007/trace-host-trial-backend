@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: trace-host-trial-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.10.0
+      - key: ALLOWED_ORIGINS
+        value: https://trace-host-trial-202610.vercel.app,http://127.0.0.1:4192
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trace-host-trial-db
+          property: connectionString
+databases:
+  - name: trace-host-trial-db
+    plan: free
+    databaseName: trace_host_trial
+    user: trace_host_trial
