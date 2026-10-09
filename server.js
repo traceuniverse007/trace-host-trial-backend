@@ -94,7 +94,7 @@ async function initDb() {
 
 app.get('/', (_req, res) => res.json({ service: 'TRACE host trial applications', status: 'ok' }));
 app.get('/health', async (_req, res) => {
-  try { await pool.query('SELECT 1'); res.json({ ok: true, time: new Date().toISOString() }); }
+  try { await pool.query('SELECT 1'); res.json({ ok: true, mailConfigured: Boolean(resendApiKey && mailTo), time: new Date().toISOString() }); }
   catch { res.status(503).json({ ok: false }); }
 });
 
