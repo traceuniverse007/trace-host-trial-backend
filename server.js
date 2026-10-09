@@ -8,6 +8,9 @@ const port = Number(process.env.PORT || 10000);
 const allowedOrigins = new Set((process.env.ALLOWED_ORIGINS || 'https://trace-host-trial-202610.vercel.app,http://127.0.0.1:4192').split(',').map(v => v.trim()).filter(Boolean));
 const databaseUrl = process.env.DATABASE_URL;
 const adminToken = process.env.ADMIN_TOKEN;
+const resendApiKey = process.env.RESEND_API_KEY;
+const mailTo = process.env.MAIL_TO;
+const mailFrom = process.env.MAIL_FROM || 'TRACE Host Trial <onboarding@resend.dev>';
 const pool = databaseUrl ? new Pool({ connectionString: databaseUrl, ssl: databaseUrl.includes('localhost') ? false : { rejectUnauthorized: false } }) : null;
 const attempts = new Map();
 
@@ -28,6 +31,48 @@ app.use((req, res, next) => {
 const clean = (value, max) => String(value ?? '').trim().replace(/[<>]/g, '').slice(0, max);
 const validPhone = value => /^01[016789]-?\d{3,4}-?\d{4}$/.test(value.replace(/\s/g, ''));
 const clientKey = req => crypto.createHash('sha256').update(`${req.ip}|${req.get('user-agent') || ''}`).digest('hex').slice(0, 24);
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+}[character]));
+
+async function sendApplicationEmail(application) {
+  if (!resendApiKey || !mailTo) return { sent: false, reason: 'not-configured' };
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${resendApiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: mailFrom,
+      to: [mailTo],
+      subject: `[TRACE 별별모임터] ${application.name}님의 호스트 신청`,
+      html: `
+        <div style="font-family:Arial,'Noto Sans KR',sans-serif;line-height:1.65;color:#172033;max-width:640px;margin:0 auto">
+          <h1 style="font-size:22px;margin:0 0 20px">새로운 호스트 신청이 도착했어요.</h1>
+          <table style="width:100%;border-collapse:collapse">
+            <tbody>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb;width:120px">접수번호</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml(application.publicId)}</td></tr>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb">이름</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml(application.name)}</td></tr>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb">연락처</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml(application.phone)}</td></tr>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb">장르</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml(application.category)}</td></tr>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb">가능 일정</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml(application.schedule)}</td></tr>
+              <tr><th style="text-align:left;padding:10px;border-bottom:1px solid #e5e7eb">후속 안내</th><td style="padding:10px;border-bottom:1px solid #e5e7eb">${application.wantsFollowup ? '희망' : '미희망'}</td></tr>
+            </tbody>
+          </table>
+          <h2 style="font-size:17px;margin:24px 0 8px">모임 소개</h2>
+          <div style="white-space:pre-wrap;background:#f6f7fb;padding:16px;border-radius:12px">${escapeHtml(application.content)}</div>
+        </div>`
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Resend ${response.status}: ${detail.slice(0, 300)}`);
+  }
+  return { sent: true };
+}
 
 async function initDb() {
   if (!pool) throw new Error('DATABASE_URL is required');
@@ -79,7 +124,17 @@ app.post('/api/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
       [publicId, name, phone, category, content, schedule, req.body.wantsFollowup === true]
     );
-    res.status(201).json({ ok: true, id: publicId, message: '신청이 접수됐어요. 확인 후 연락드릴게요!' });
+    let emailSent = false;
+    try {
+      const mailResult = await sendApplicationEmail({
+        publicId, name, phone, category, content, schedule,
+        wantsFollowup: req.body.wantsFollowup === true
+      });
+      emailSent = mailResult.sent;
+    } catch (mailError) {
+      console.error('application email failed', mailError?.message);
+    }
+    res.status(201).json({ ok: true, id: publicId, emailSent, message: '신청이 접수됐어요. 확인 후 연락드릴게요!' });
   } catch (error) {
     console.error('application insert failed', error?.message);
     res.status(500).json({ message: '접수 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.' });
